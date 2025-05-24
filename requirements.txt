@@ -1,0 +1,10 @@
+transformers
+trl
+datasets
+bitsandbytes
+peft
+qwen-vl-utils
+wandb
+accelerate
+deepspeed
+jupyter

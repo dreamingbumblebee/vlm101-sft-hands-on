@@ -63,6 +63,11 @@ jupyter
 ---
 
 ## Quickstart
+### 0. Make directories
+
+```bash
+bash 0.mkdir_dir.sh
+```
 
 ### 1. Download Checkpoints and Dataset
 

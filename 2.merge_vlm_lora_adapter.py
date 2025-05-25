@@ -4,9 +4,10 @@
 
 """
 # 사용 예시:
-python run_llava_next_merge.py \
-    --model_name_or_path /work/checkpoints/hf/llava-v1.6-vicuna-7b-hf \
-    --output_dir llava-next-7B-qlora-sft-ko-1.5k \
+python 2.merge_vlm_lora_adapter.py \
+    --model_name_or_path /work/checkpoints/hf/Qwen2.5-VL-3B-Instruct \
+    --adapter_dir /work/vlm101-sft-hands-on/qwen2.5-3b-qlora-sft-ko-1.5k \
+    --output_dir /work/vlm101-sft-hands-on/qwen2.5-3b-qlora-sft-ko-1.5k/merged_model \
     --torch_dtype bfloat16
 """
 
@@ -14,7 +15,6 @@ import os
 import gc
 import time
 import torch
-from transformers import LlavaNextProcessor, LlavaNextForConditionalGeneration
 from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2_5_VLProcessor, AutoProcessor
 from peft import PeftModel
 from dataclasses import dataclass, field
@@ -22,7 +22,6 @@ from typing import Optional
 from trl import TrlParser, SFTConfig
 
 # 유틸리티 함수
-
 def is_main_process() -> bool:
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         return torch.distributed.get_rank() == 0

@@ -8,15 +8,16 @@ pip install accelerate transformers datasets trl peft bitsandbytes wandb
 # Example launch:
 accelerate launch \
     --config_file=./deepspeed_zero3.yaml \
-    run_vlm_lora_sft.py \
+    1.run_vlm_lora_sft.py \
     --dataset_name /work/dataset/vlm/KoLLaVA-Instruct-1.5k \
-    --model_name_or_path /work/checkpoints/hf/llava-v1.6-vicuna-7b-hf \
-    --output_dir llava-next-7B-qlora-sft-ko-1.5k \
+    --model_name_or_path /work/checkpoints/hf/Qwen2.5-VL-3B-Instruct \
+    --output_dir /work/vlm101-sft-hands-on/qwen2.5-3b-qlora-sft-ko-1.5k \
     --per_device_train_batch_size 4 \
     --gradient_accumulation_steps 4 \
     --bf16 \
     --torch_dtype bfloat16 \
     --gradient_checkpointing
+
 """
 
 import os
@@ -24,8 +25,7 @@ import gc
 import time
 import torch
 from datasets import load_dataset
-from transformers import LlavaNextProcessor, LlavaNextForConditionalGeneration, BitsAndBytesConfig
-from transformers import AutoModelForImageTextToText, AutoProcessor
+from transformers import AutoProcessor, BitsAndBytesConfig
 from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2_5_VLProcessor
 from trl import TrlParser, SFTTrainer, SFTConfig
 from peft import LoraConfig, get_peft_model, PeftModel, prepare_model_for_kbit_training
@@ -267,18 +267,6 @@ def main():
     )
     
     # 모델 로드
-    # model = LlavaNextForConditionalGeneration.from_pretrained(
-    #     sft_args.model_name_or_path,
-    #     torch_dtype=torch.bfloat16,
-    #     quantization_config=bnb_config,
-    # )
-    # ValueError: DeepSpeed Zero-3 is not compatible with passing a `device_map`
-#     model = AutoModelForImageTextToText.from_pretrained(
-#         sft_args.model_name_or_path,
-#         torch_dtype=torch.bfloat16,  # 모델 파라미터의 기본 데이터 타입 지정
-#         attn_implementation="eager",  # attention 연산 방식 설정 (Gemma-3에서 필요함)
-#         quantization_config=bnb_config  # 위에서 정의한 양자화 설정 적용
-# )
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         sft_args.model_name_or_path,
         torch_dtype=torch.bfloat16,  # 모델 파라미터의 기본 데이터 타입 지정
@@ -288,7 +276,6 @@ def main():
     model.config.use_cache = False  # gradient checkpointing 활성화
     
     # 프로세서 로드
-    # processor = LlavaNextProcessor.from_pretrained(sft_args.model_name_or_path, use_fast=True)
     processor = AutoProcessor.from_pretrained(sft_args.model_name_or_path, use_fast=True)
     
     if processor.tokenizer.chat_template is None:

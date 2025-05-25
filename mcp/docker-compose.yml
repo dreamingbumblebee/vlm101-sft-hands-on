@@ -1,0 +1,60 @@
+services:
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    ports:
+      - "3000:8080"
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    volumes:
+      - open-webui-data:/app/backend/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: always
+
+  # Optional: MCP Proxy Server for tools
+  mcp-proxy:
+    build:
+      context: .
+      dockerfile: mcp-proxy/Dockerfile
+    container_name: mcp-proxy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./mcp-proxy/mcp-config.json:/app/config/mcp-config.json
+      - ./mcp-servers:/app/mcp-servers
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: always
+    profiles:
+      - tools
+
+  weather-mcp:
+    build:
+      context: ./mcp-servers/weather
+      dockerfile: Dockerfile
+    container_name: weather-mcp
+    ports:
+      - "8002:8002"
+    restart: always
+    profiles:
+      - tools
+
+  stock-mcp:
+    build:
+      context: ./mcp-servers/stock
+      dockerfile: Dockerfile
+    container_name: stock-mcp
+    ports:
+      - "8003:8003"
+    restart: always
+    profiles:
+      - tools
+
+volumes:
+  open-webui-data:
+    name: open-webui-data
+
+
+# command: ["mcpo", "--host", "0.0.0.0", "--port", "8002", "--config", "mcp-config.json"]
+# command: ["uvx", "mcpo", "--host", "0.0.0.0", "--port", "8002", "--api-key", "top-secret", "--", "uv", "run", "weather.py"]

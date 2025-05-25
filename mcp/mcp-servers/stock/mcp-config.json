@@ -1,0 +1,9 @@
+{
+    "mcpServers": {
+      "stock": {
+        "command": "uv",
+        "args": ["run", "stock.py"]
+      }
+    }
+  }
+  

@@ -1,0 +1,2 @@
+# https://huggingface.co/docs/huggingface_hub/main/guides/cli#download-multiple-files
+huggingface-cli download DreamingBumblebee/qwen2.5-3b-qlora-sft-ko-1.5k-with-gguf --local-dir ./qwen2.5-3b-qlora-sft-ko-1.5k-with-gguf --include "*.gguf"

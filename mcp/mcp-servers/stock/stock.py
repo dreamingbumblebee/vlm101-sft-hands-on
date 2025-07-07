@@ -11,85 +11,71 @@ from bs4 import BeautifulSoup
 # Initialize FastMCP server
 mcp = FastMCP("stock")
 
-async def resolve_ticker(ticker_or_name: str) -> Dict[str, Any]:
+def is_ticker(symbol: str) -> bool:
     """
-    종목명 또는 티커를 받아서 실제 티커로 변환하는 공통 함수
-    
-    Args:
-        ticker_or_name: 종목명 또는 티커 심볼
-        
-    Returns:
-        Dict[str, Any]: {"ticker": "실제티커", "name": "회사명", "error": "에러메시지"}
+    심볼이 티커인지 판별 (한국/미국)
+    Check if the symbol is a ticker (KR/US)
     """
-    # 입력 정리 (공백 제거, 대소문자 정규화)
-    ticker_or_name = ticker_or_name.strip()
-    
-    # 이미 티커인 경우 (한국 주식: .KS, .KQ, 미국 주식: 대문자이면서 5글자 이하)
-    if ticker_or_name.endswith('.KS') or ticker_or_name.endswith('.KQ') or (ticker_or_name.isupper() and len(ticker_or_name) <= 5):
-        return {"ticker": ticker_or_name, "name": ticker_or_name}
-    
-    # 종목명인 경우 웹 검색을 통해 티커 찾기
-    print(f"종목명 '{ticker_or_name}'을(를) 티커로 변환 중...")
-    
-    try:
-        # 웹 검색을 통해 티커 찾기
-        search_result = await search_stocks(ticker_or_name, limit=1)
-        
-        if "error" in search_result:
-            return {"error": f"'{ticker_or_name}'에 대한 주식 정보를 찾을 수 없습니다."}
-        
-        # 검색 결과에서 첫 번째 티커와 회사명 추출
-        result_text = search_result.get("result", "")
-        
-        # 티커 추출: (티커) 패턴 찾기
-        ticker_match = re.search(r'\(([^)]+)\)', result_text)
-        if not ticker_match:
-            return {"error": f"'{ticker_or_name}'에 대한 티커를 찾을 수 없습니다."}
-        
-        ticker = ticker_match.group(1)
-        
-        # 회사명 추출: 첫 번째 줄에서 티커 앞부분
-        lines = result_text.strip().split('\n')
-        if lines:
-            first_line = lines[0]
-            # "1. 회사명 (티커)" 패턴에서 회사명 추출
-            name_match = re.search(r'^\d+\.\s*(.+?)\s*\([^)]+\)', first_line)
-            if name_match:
-                company_name = name_match.group(1).strip()
-            else:
-                company_name = ticker_or_name
-        else:
-            company_name = ticker_or_name
-        
-        print(f"찾은 티커: {ticker}, 회사명: {company_name}")
-        return {"ticker": ticker, "name": company_name}
-        
-    except Exception as e:
-        return {"error": f"티커 변환 중 오류 발생: {str(e)}"}
+    symbol = symbol.strip()
+    # 한국 주식은 .KS 또는 .KQ로 끝나야 함
+    if symbol.endswith('.KS') or symbol.endswith('.KQ'):
+        return True
+    # 미국 주식은 대문자이고 1-5글자이면서 숫자가 포함되어 있거나 특정 패턴을 가져야 함
+    if symbol.isupper() and 1 <= len(symbol) <= 5:
+        # 숫자가 포함되어 있거나 특정 패턴인 경우만 티커로 인식
+        if any(char.isdigit() for char in symbol) or symbol in ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX', 'AMD', 'INTC']:
+            return True
+    return False
 
-async def resolve_multiple_tickers(ticker_or_name_list: List[str]) -> Dict[str, Any]:
+async def resolve_tickers(
+    ticker_or_names: Union[str, List[str]]
+) -> Union[Dict[str, Any], Dict[str, List[Dict[str, Any]]]]:
     """
-    여러 종목명을 한번에 티커로 변환하는 함수
+    종목명 또는 티커(들)를 받아 실제 티커와 회사명으로 변환합니다.
+    (단일 입력/복수 입력 모두 지원)
+    
+    Given stock name(s) or ticker(s), resolve to actual ticker and company name.
+    (Supports both single and multiple input)
     
     Args:
-        ticker_or_name_list: 종목명 또는 티커 심볼 리스트
-        
+        ticker_or_names (str or List[str]): 종목명/티커 또는 그 리스트
     Returns:
-        Dict[str, Any]: {"tickers": [{"ticker": "티커", "name": "회사명"}], "errors": ["에러메시지"]}
+        dict: {"ticker": ..., "name": ...} 또는 {"tickers": [...], "errors": [...]}
     """
-    results = {"tickers": [], "errors": []}
-    
-    for ticker_or_name in ticker_or_name_list:
-        ticker_info = await resolve_ticker(ticker_or_name)
+    if isinstance(ticker_or_names, str):
+        ticker_or_name = ticker_or_names.strip()
         
-        if "error" in ticker_info:
-            results["errors"].append(f"{ticker_or_name}: {ticker_info['error']}")
+        # 이미 티커인 경우
+        if is_ticker(ticker_or_name):
+            return {"ticker": ticker_or_name, "name": ticker_or_name}
+        
+        try:
+            search_result = await search_stocks(ticker_or_name, limit=1)
+            if "error" not in search_result:
+                # 검색 결과에서 첫 번째 항목 추출
+                lines = search_result["result"].split("\n")
+                for line in lines:
+                    if "(" in line and ")" in line:
+                        # "1. Company Name (TICKER)" 형식에서 티커 추출
+                        ticker_start = line.find("(") + 1
+                        ticker_end = line.find(")")
+                        if ticker_start > 0 and ticker_end > ticker_start:
+                            ticker = line[ticker_start:ticker_end]
+                            company_name = line.split("(")[0].split(". ")[-1].strip()
+                            return {"ticker": ticker, "name": company_name}
+                return {"error": f"No ticker found for '{ticker_or_name}'"}
+            else:
+                return {"error": search_result["error"]}
+        except Exception as e:
+            return {"error": f"Error occurred during ticker resolution: {str(e)}"}
+    # 복수 입력
+    results = {"tickers": [], "errors": []}
+    for item in ticker_or_names:
+        info = await resolve_tickers(item)
+        if "error" in info:
+            results["errors"].append(f"{item}: {info['error']}")
         else:
-            results["tickers"].append({
-                "ticker": ticker_info["ticker"],
-                "name": ticker_info["name"]
-            })
-    
+            results["tickers"].append({"ticker": info["ticker"], "name": info["name"]})
     return results
 
 async def get_stock_info(ticker: str) -> Dict[str, Any]:
@@ -142,12 +128,12 @@ async def get_stock_info(ticker: str) -> Dict[str, Any]:
             
         except Exception as e:
             # 개별 정보 가져오기 실패 시
-            print(f"티커 {ticker} 정보 가져오기 실패: {str(e)}")
-            return {"error": f"주식 정보 가져오기 실패: {str(e)}"}
+            print(f"Error processing ticker {ticker}: {str(e)}")
+            return {"error": f"Error occurred while fetching information: {str(e)}"}
             
     except Exception as e:
         print(f"티커 {ticker} 처리 중 오류: {str(e)}")
-        return {"error": f"정보를 가져오는 중 오류 발생: {str(e)}"}
+        return {"error": f"Error occurred while fetching information: {str(e)}"}
 
 def format_history_data(data: pd.DataFrame) -> List[Dict[str, Any]]:
     """
@@ -169,239 +155,176 @@ def format_history_data(data: pd.DataFrame) -> List[Dict[str, Any]]:
     return result
 
 @mcp.tool()
-# async def get_stock_price(ticker_or_name: str) -> str:
 async def get_stock_price(ticker_or_name: str) -> dict[str, Any]:
     """
-    특정 종목의 현재 주가 정보를 가져옵니다. 회사 이름이나 티커 심볼 모두 사용 가능합니다.
+    특정 종목의 현재 주가 정보를 가져옵니다. (회사 이름 또는 티커 심볼 입력 가능)
+    Get the current stock price info for a given company name or ticker symbol.
 
     Args:
-        ticker_or_name: 회사 이름 또는 주식 티커 심볼
-            - 회사 이름 예시: '삼성전자', '애플', '마이크로소프트', '네이버', '카카오'
-            - 한국 주식 티커 예시: '005930.KS' (삼성전자), '035420.KS' (네이버)
-            - 미국 주식 티커 예시: 'AAPL' (애플), 'MSFT' (마이크로소프트)
-
+        ticker_or_name (str): 회사 이름 또는 주식 티커 심볼
     Returns:
-        str: 주식의 상세 정보 (현재가, 거래량, 시가총액 등)
+        dict: 주식의 상세 정보 (현재가, 거래량, 시가총액 등)
     """
     try:
-        # 종목명을 티커로 변환
-        ticker_info = await resolve_ticker(ticker_or_name)
-        
+        ticker_info = await resolve_tickers(ticker_or_name)
         if "error" in ticker_info:
             return {"error": ticker_info["error"]}
-        
         ticker = ticker_info["ticker"]
         company_name = ticker_info["name"]
-        
         stock_info = await get_stock_info(ticker)
-        
         if "error" in stock_info:
-            # return f"오류: {stock_info['error']}"
-            return {"error": f"오류: {stock_info['error']}"}
+            return {"error": f"Error: {stock_info['error']}"}
         
-        result = f"""
-종목 정보: {stock_info.get('name', '')} ({stock_info.get('symbol', '')})
-국가: {stock_info.get('country', '정보 없음')}
-섹터: {stock_info.get('sector', '정보 없음')}
-산업: {stock_info.get('industry', '정보 없음')}
-
-현재가: {stock_info.get('currentPrice', '정보 없음')} {stock_info.get('currency', '')}
-전일 종가: {stock_info.get('previousClose', '정보 없음')} {stock_info.get('currency', '')}
-시가: {stock_info.get('open', '정보 없음')} {stock_info.get('currency', '')}
-당일 최저가: {stock_info.get('dayLow', '정보 없음')} {stock_info.get('currency', '')}
-당일 최고가: {stock_info.get('dayHigh', '정보 없음')} {stock_info.get('currency', '')}
-거래량: {stock_info.get('volume', '정보 없음')}
-
-시가총액: {stock_info.get('marketCap', '정보 없음')}
-52주 최저가: {stock_info.get('fiftyTwoWeekLow', '정보 없음')} {stock_info.get('currency', '')}
-52주 최고가: {stock_info.get('fiftyTwoWeekHigh', '정보 없음')} {stock_info.get('currency', '')}
-PER(선행): {stock_info.get('forwardPE', '정보 없음')}
-PER(후행): {stock_info.get('trailingPE', '정보 없음')}
-배당금: {stock_info.get('dividend_rate', '정보 없음')} {stock_info.get('currency', '')}
-배당수익률: {stock_info.get('dividend_yield', '정보 없음') * 100 if stock_info.get('dividend_yield') is not None else '정보 없음'}%
-"""
-        # return result
+        result = f"\nStock Information: {stock_info.get('name', company_name)} ({ticker})\n"
+        result += f"Country: {stock_info.get('country', 'Unknown')}\n"
+        result += f"Sector: {stock_info.get('sector', 'Unknown')}\n"
+        result += f"Industry: {stock_info.get('industry', 'Unknown')}\n\n"
+        
+        result += f"Current Price: {stock_info.get('currentPrice', 'N/A')} {stock_info.get('currency', '')}\n"
+        result += f"Previous Close: {stock_info.get('previousClose', 'N/A')} {stock_info.get('currency', '')}\n"
+        result += f"Open: {stock_info.get('open', 'N/A')} {stock_info.get('currency', '')}\n"
+        result += f"Day Low: {stock_info.get('dayLow', 'N/A')} {stock_info.get('currency', '')}\n"
+        result += f"Day High: {stock_info.get('dayHigh', 'N/A')} {stock_info.get('currency', '')}\n"
+        result += f"Volume: {stock_info.get('volume', 'N/A')}\n\n"
+        
+        result += f"Market Cap: {stock_info.get('marketCap', 'N/A')}\n"
+        result += f"52 Week Low: {stock_info.get('fiftyTwoWeekLow', 'N/A')} {stock_info.get('currency', '')}\n"
+        result += f"52 Week High: {stock_info.get('fiftyTwoWeekHigh', 'N/A')} {stock_info.get('currency', '')}\n"
+        result += f"Forward P/E: {stock_info.get('forwardPE', 'N/A')}\n"
+        result += f"Trailing P/E: {stock_info.get('trailingPE', 'N/A')}\n"
+        result += f"Dividend: {stock_info.get('dividendRate', 'N/A')} {stock_info.get('currency', '')}\n"
+        result += f"Dividend Yield: {stock_info.get('dividendYield', 'N/A')}%\n"
+        
         return {"result": result}
     except Exception as e:
-        # return f"주가 정보를 가져오는 중 오류가 발생했습니다: {str(e)}"
-        return {"error": f"주가 정보를 가져오는 중 오류가 발생했습니다: {str(e)}"}
+        return {"error": f"Error occurred while fetching stock price: {str(e)}"}
 
 @mcp.tool()
-# async def get_stock_history(ticker: str, period: str = "1mo", interval: str = "1d") -> str:
 async def get_stock_history(ticker_or_name: str, period: str = "1mo", interval: str = "1d") -> dict[str, Any]:
     """
     특정 종목의 주가 히스토리를 가져옵니다.
+    Get historical stock price data for a given company name or ticker symbol.
 
     Args:
-        ticker_or_name: 주식 티커 심볼 또는 회사명 (예: 삼성전자, '005930.KS', 애플, 'AAPL')
-        period: 기간 (1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max 중 선택)
-        interval: 간격 (1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h, 1d, 5d, 1wk, 1mo, 3mo 중 선택)
+        ticker_or_name (str): 주식 티커 심볼 또는 회사명
+        period (str): 기간 (e.g. '1w', '1mo', '1y', ...)
+        interval (str): 간격 (e.g. '1d', '1wk', ...)
+    Returns:
+        dict: 주가 히스토리 및 통계 정보
     """
     try:
-        # 기간과 간격 확인
+        if period == "1w":
+            period = "5d"
         valid_periods = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"]
         valid_intervals = ["1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "1d", "5d", "1wk", "1mo", "3mo"]
-        
         if period not in valid_periods:
-            # return f"잘못된 기간입니다. 다음 중에서 선택해주세요: {', '.join(valid_periods)}"
-            return {"error": f"잘못된 기간입니다. 다음 중에서 선택해주세요: {', '.join(valid_periods)}"}
-        
+            return {"error": f"Invalid period. Please choose from: {', '.join(valid_periods)}"}
         if interval not in valid_intervals:
-            # return f"잘못된 간격입니다. 다음 중에서 선택해주세요: {', '.join(valid_intervals)}"
-            return {"error": f"잘못된 간격입니다. 다음 중에서 선택해주세요: {', '.join(valid_intervals)}"}
-        
-        # 종목명을 티커로 변환
-        ticker_info = await resolve_ticker(ticker_or_name)
-        
+            return {"error": f"Invalid interval. Please choose from: {', '.join(valid_intervals)}"}
+        ticker_info = await resolve_tickers(ticker_or_name)
         if "error" in ticker_info:
             return {"error": ticker_info["error"]}
-        
         ticker = ticker_info["ticker"]
         company_name = ticker_info["name"]
-        
-        # 주가 데이터 가져오기
         stock = yf.Ticker(ticker)
         history = stock.history(period=period, interval=interval)
-        
         if history.empty:
-            return {"error": f"{company_name} ({ticker})에 대한 히스토리 데이터가 없습니다."}
-        
-        # 데이터 포맷팅
+            return {"error": f"No history data available for {company_name} ({ticker})"}
         formatted_data = format_history_data(history)
-        
-        # 기본 정보
         info = await get_stock_info(ticker)
         name = info.get("name", company_name)
-        
-        # 결과 문자열 생성
-        result = f"{name} ({ticker}) 주가 히스토리 (기간: {period}, 간격: {interval})\n\n"
-        
-        # 최근 5개 데이터만 표시
+        result = f"{name} ({ticker}) Stock History (Period: {period}, Interval: {interval})\n\n"
         for entry in formatted_data[-5:]:
-            result += f"날짜: {entry['date']}, 시가: {entry['open']}, 고가: {entry['high']}, 저가: {entry['low']}, 종가: {entry['close']}, 거래량: {entry['volume']}\n"
-        
-        # 간단한 통계 추가
+            result += f"Date: {entry['date']}, Open: {entry['open']}, High: {entry['high']}, Low: {entry['low']}, Close: {entry['close']}, Volume: {entry['volume']}\n"
         close_prices = [entry["close"] for entry in formatted_data if entry["close"] is not None]
         if close_prices:
             avg_price = sum(close_prices) / len(close_prices)
             min_price = min(close_prices)
             max_price = max(close_prices)
-            
-            result += f"\n기간 내 평균 종가: {round(avg_price, 2)}"
-            result += f"\n기간 내 최저 종가: {min_price}"
-            result += f"\n기간 내 최고 종가: {max_price}"
-            
+            result += f"\nAverage Close Price: {round(avg_price, 2)}"
+            result += f"\nLowest Close Price: {min_price}"
+            result += f"\nHighest Close Price: {max_price}"
             if len(close_prices) >= 2:
                 first_price = close_prices[0]
                 last_price = close_prices[-1]
                 change = last_price - first_price
                 change_pct = (change / first_price) * 100
-                
-                result += f"\n기간 내 변동: {round(change, 2)} ({round(change_pct, 2)}%)"
-        
-        # return result
+                result += f"\nPrice Change: {round(change, 2)} ({round(change_pct, 2)}%)"
         return {"result": result}
     except Exception as e:
-        # return f"주가 히스토리를 가져오는 중 오류가 발생했습니다: {str(e)}"
-        return {"error": f"주가 히스토리를 가져오는 중 오류가 발생했습니다: {str(e)}"}
+        return {"error": f"Error occurred while fetching stock history: {str(e)}"}
 
 @mcp.tool()
-# async def get_earnings(ticker: str) -> str:
 async def get_earnings(ticker_or_name: str) -> dict[str, Any]:
     """
     특정 종목의 실적(어닝) 정보를 가져옵니다.
+    Get earnings (financial results) info for a given company name or ticker symbol.
 
     Args:
-        ticker_or_name: 주식 티커 심볼 또는 회사명 (예: 삼성전자, '005930.KS', 애플, 'AAPL')
+        ticker_or_name (str): 주식 티커 심볼 또는 회사명
+    Returns:
+        dict: 어닝/재무제표 정보
     """
     try:
-        # 종목명을 티커로 변환
-        ticker_info = await resolve_ticker(ticker_or_name)
-        
+        ticker_info = await resolve_tickers(ticker_or_name)
         if "error" in ticker_info:
             return {"error": ticker_info["error"]}
-        
         ticker = ticker_info["ticker"]
         company_name = ticker_info["name"]
-        
         stock = yf.Ticker(ticker)
         info = await get_stock_info(ticker)
         name = info.get("name", company_name)
-        
-        # 최근 어닝 정보
         earnings_dates = None
         try:
             earnings_dates = stock.earnings_dates
         except Exception:
             pass
-        
         if earnings_dates is None or (hasattr(earnings_dates, 'empty') and earnings_dates.empty):
-            recent_earnings = "어닝 날짜 정보가 없습니다."
+            recent_earnings = "No earnings date information available."
         else:
-            # 최근 4개 어닝 정보만 표시
-            recent_earnings = "최근 어닝 정보:\n"
+            recent_earnings = "Recent Earnings Information:\n"
             try:
                 for i, (date, row) in enumerate(earnings_dates.iloc[:4].iterrows()):
                     eps_est = row.get('EPS Estimate', None)
                     eps_actual = row.get('Reported EPS', None)
                     surprise = row.get('Surprise(%)', None)
-                    
                     recent_earnings += f"{date.strftime('%Y-%m-%d')}: "
-                    recent_earnings += f"예상 EPS: {eps_est if eps_est is not None and not pd.isna(eps_est) else '정보 없음'}, "
-                    recent_earnings += f"실제 EPS: {eps_actual if eps_actual is not None and not pd.isna(eps_actual) else '정보 없음'}, "
-                    recent_earnings += f"서프라이즈: {surprise}%\n" if surprise is not None and not pd.isna(surprise) else "서프라이즈: 정보 없음\n"
+                    recent_earnings += f"Expected EPS: {eps_est if eps_est is not None and not pd.isna(eps_est) else 'N/A'}, "
+                    recent_earnings += f"Actual EPS: {eps_actual if eps_actual is not None and not pd.isna(eps_actual) else 'N/A'}, "
+                    recent_earnings += f"Surprise: {surprise}%\n" if surprise is not None and not pd.isna(surprise) else "Surprise: N/A\n"
             except Exception as e:
-                recent_earnings += f"어닝 날짜 처리 중 오류: {str(e)}\n"
-        
-        # 재무제표 정보
+                recent_earnings += f"Error processing earnings dates: {str(e)}\n"
         income_stmt = None
         try:
             income_stmt = stock.income_stmt
         except Exception:
             pass
-        
-        # 분기별 실적 (먼저 데이터 타입 확인)
-        quarterly_info = "분기별 실적 정보가 없습니다."
+        quarterly_info = "No quarterly earnings information available."
         if income_stmt is not None:
             try:
-                # DataFrame인 경우
                 if isinstance(income_stmt, pd.DataFrame):
-                    quarterly_info = "\n분기별 실적 (최근 4분기):\n"
-                    # 가장 최근 4개 분기 데이터 추출
+                    quarterly_info = "\nQuarterly Earnings (Last 4 Quarters):\n"
                     recent_quarters = income_stmt.columns[:4]
-                    
                     for date in recent_quarters:
-                        # 총수익(매출)
                         revenue = income_stmt.loc['Total Revenue', date] if 'Total Revenue' in income_stmt.index else None
-                        # 순이익
                         net_income = income_stmt.loc['Net Income', date] if 'Net Income' in income_stmt.index else None
-                        
                         formatted_date = date.strftime('%Y-%m-%d') if hasattr(date, 'strftime') else str(date)
                         quarterly_info += f"{formatted_date}: "
-                        quarterly_info += f"매출: {revenue:,.0f}" if revenue is not None and not pd.isna(revenue) else "매출: 정보 없음"
-                        quarterly_info += f", 순이익: {net_income:,.0f}\n" if net_income is not None and not pd.isna(net_income) else ", 순이익: 정보 없음\n"
-                
-                # Dict인 경우 (최신 yfinance 버전에서는 Dict 형태로 반환)
+                        quarterly_info += f"Revenue: {revenue:,.0f}" if revenue is not None and not pd.isna(revenue) else "Revenue: N/A"
+                        quarterly_info += f", Net Income: {net_income:,.0f}\n" if net_income is not None and not pd.isna(net_income) else ", Net Income: N/A\n"
                 elif isinstance(income_stmt, dict):
-                    quarterly_info = "\n분기별 실적 (최근 4분기):\n"
-                    # 키는 날짜, 값은 각 항목의 값
+                    quarterly_info = "\nQuarterly Earnings (Last 4 Quarters):\n"
                     recent_quarters = list(income_stmt.keys())[:4]
-                    
                     for date in recent_quarters:
                         date_data = income_stmt[date]
-                        # 총수익(매출)
                         revenue = date_data.get('Total Revenue', None)
-                        # 순이익
                         net_income = date_data.get('Net Income', None)
-                        
                         formatted_date = date.strftime('%Y-%m-%d') if hasattr(date, 'strftime') else str(date)
                         quarterly_info += f"{formatted_date}: "
-                        quarterly_info += f"매출: {revenue:,.0f}" if revenue is not None and not pd.isna(revenue) else "매출: 정보 없음"
-                        quarterly_info += f", 순이익: {net_income:,.0f}\n" if net_income is not None and not pd.isna(net_income) else ", 순이익: 정보 없음\n"
+                        quarterly_info += f"Revenue: {revenue:,.0f}" if revenue is not None and not pd.isna(revenue) else "Revenue: N/A"
+                        quarterly_info += f", Net Income: {net_income:,.0f}\n" if net_income is not None and not pd.isna(net_income) else ", Net Income: N/A\n"
             except Exception as e:
-                quarterly_info = f"분기별 실적 정보 처리 중 오류: {str(e)}"
-        
-        # 다른 재무 정보 확인
+                quarterly_info = f"Error processing quarterly earnings information: {str(e)}"
         balance_sheet = None
         cash_flow = None
         try:
@@ -409,70 +332,50 @@ async def get_earnings(ticker_or_name: str) -> dict[str, Any]:
             cash_flow = stock.cashflow
         except Exception:
             pass
-        
-        # 연간 실적
-        annual_info = "연간 실적 정보가 없습니다."
+        annual_info = "No annual earnings information available."
         if balance_sheet is not None or cash_flow is not None:
             try:
-                annual_info = "\n연간 실적 (최근 정보):\n"
-                
-                # 먼저 balance_sheet에서 정보 추출
+                annual_info = "\nAnnual Earnings (Latest Information):\n"
                 if isinstance(balance_sheet, pd.DataFrame) and not balance_sheet.empty:
-                    # 가장 최근 연도 데이터
                     latest_year = balance_sheet.columns[0]
                     year = latest_year.year if hasattr(latest_year, 'year') else str(latest_year).split('-')[0]
-                    
-                    # 총자산
                     total_assets = balance_sheet.loc['Total Assets', latest_year] if 'Total Assets' in balance_sheet.index else None
-                    # 총부채
                     total_liabilities = balance_sheet.loc['Total Liabilities Net Minority Interest', latest_year] if 'Total Liabilities Net Minority Interest' in balance_sheet.index else None
-                    
-                    annual_info += f"{year} 총자산: {total_assets:,.0f}" if total_assets is not None and not pd.isna(total_assets) else f"{year} 총자산: 정보 없음"
-                    annual_info += f", 총부채: {total_liabilities:,.0f}\n" if total_liabilities is not None and not pd.isna(total_liabilities) else ", 총부채: 정보 없음\n"
-                
-                # cash_flow에서 추가 정보 추출
+                    annual_info += f"{year} Total Assets: {total_assets:,.0f}" if total_assets is not None and not pd.isna(total_assets) else f"{year} Total Assets: N/A"
+                    annual_info += f", Total Liabilities: {total_liabilities:,.0f}\n" if total_liabilities is not None and not pd.isna(total_liabilities) else ", Total Liabilities: N/A\n"
                 if isinstance(cash_flow, pd.DataFrame) and not cash_flow.empty:
-                    # 가장 최근 연도 데이터
                     latest_year = cash_flow.columns[0]
                     year = latest_year.year if hasattr(latest_year, 'year') else str(latest_year).split('-')[0]
-                    
-                    # 영업활동 현금흐름
                     operating_cash_flow = cash_flow.loc['Operating Cash Flow', latest_year] if 'Operating Cash Flow' in cash_flow.index else None
-                    # 투자활동 현금흐름
                     investing_cash_flow = cash_flow.loc['Investing Cash Flow', latest_year] if 'Investing Cash Flow' in cash_flow.index else None
-                    
-                    annual_info += f"{year} 영업활동 현금흐름: {operating_cash_flow:,.0f}" if operating_cash_flow is not None and not pd.isna(operating_cash_flow) else f"{year} 영업활동 현금흐름: 정보 없음"
-                    annual_info += f", 투자활동 현금흐름: {investing_cash_flow:,.0f}\n" if investing_cash_flow is not None and not pd.isna(investing_cash_flow) else ", 투자활동 현금흐름: 정보 없음\n"
+                    annual_info += f"{year} Operating Cash Flow: {operating_cash_flow:,.0f}" if operating_cash_flow is not None and not pd.isna(operating_cash_flow) else f"{year} Operating Cash Flow: N/A"
+                    annual_info += f", Investing Cash Flow: {investing_cash_flow:,.0f}\n" if investing_cash_flow is not None and not pd.isna(investing_cash_flow) else ", Investing Cash Flow: N/A\n"
             except Exception as e:
-                annual_info += f"연간 실적 정보 처리 중 오류: {str(e)}"
-        
-        # 다음 어닝 예정일
-        next_earnings = "다음 어닝 예정일 정보가 없습니다."
+                annual_info += f"Error processing annual earnings information: {str(e)}"
+        next_earnings = "No next earnings date information available."
         try:
             next_earnings_date = stock.calendar
-            
             if next_earnings_date is not None and hasattr(next_earnings_date, 'empty') and not next_earnings_date.empty:
                 next_date = next_earnings_date.iloc[0, 0] if len(next_earnings_date) > 0 and len(next_earnings_date.columns) > 0 else None
-                next_earnings = f"\n다음 어닝 예정일: {next_date.strftime('%Y-%m-%d') if next_date is not None and not pd.isna(next_date) else '정보 없음'}"
+                next_earnings = f"\nNext Earnings Date: {next_date.strftime('%Y-%m-%d') if next_date is not None and not pd.isna(next_date) else 'N/A'}"
         except Exception as e:
-            next_earnings = f"\n다음 어닝 예정일 정보 처리 중 오류: {str(e)}"
-        
-        result = f"{name} ({ticker}) 어닝 정보\n\n{recent_earnings}\n{quarterly_info}\n{annual_info}\n{next_earnings}"
-        # return result
+            next_earnings = f"\nError processing next earnings date: {str(e)}"
+        result = f"{name} ({ticker}) Earnings Information\n\n{recent_earnings}\n{quarterly_info}\n{annual_info}\n{next_earnings}"
         return {"result": result}
     except Exception as e:
-        # return f"어닝 정보를 가져오는 중 오류가 발생했습니다: {str(e)}"
-        return {"error": f"어닝 정보를 가져오는 중 오류가 발생했습니다: {str(e)}"}
+        return {"error": f"Error occurred while fetching earnings information: {str(e)}"}
 
 @mcp.tool()
-# async def search_stocks(query: str, limit: int = 5) -> str:
 async def search_stocks(query: str, limit: int = 5) -> dict[str, Any]:
     """
     주식 심볼을 검색합니다.
+    Search for stock symbols.
 
     Args:
-        query: 검색어 (회사 이름이나 심볼의 일부)
-        limit: 결과 제한 개수 (기본값: 5)
+        query (str): 검색어 (회사 이름이나 심볼의 일부)
+        limit (int): 결과 제한 개수 (기본값: 5)
+    Returns:
+        dict: 검색 결과 목록
     """
     try:
         matches = []
@@ -506,7 +409,7 @@ async def search_stocks(query: str, limit: int = 5) -> dict[str, Any]:
                                 "symbol": ticker,
                                 "name": stock_info.get("name", name),
                                 "country": stock_info.get("country", "미국" if exchange in ["NYQ", "NMS", "ASE"] else "기타"),
-                                "price": stock_info.get("currentPrice", "정보 없음"),
+                                "price": stock_info.get("currentPrice", "N/A"),
                                 "exchange": exchange
                             })
                             print(f"    성공: {ticker} 추가됨")
@@ -514,7 +417,7 @@ async def search_stocks(query: str, limit: int = 5) -> dict[str, Any]:
                             print(f"    실패: {ticker} - {stock_info.get('error', '알 수 없는 오류')}")
                     except Exception as e:
                         # 개별 결과 처리 중 오류가 발생해도 계속 진행
-                        print(f"개별 검색 결과 처리 중 오류 ({ticker}): {str(e)}")
+                        print(f"Error processing individual search result ({ticker}): {str(e)}")
                         continue
                         
                 # yahooquery에서 결과를 찾았으면 여기서 종료 (다른 검색 시도 안함)
@@ -534,10 +437,10 @@ async def search_stocks(query: str, limit: int = 5) -> dict[str, Any]:
                         result = f"'{query}'에 대한 검색 결과:\n\n"
                         for i, match in enumerate(unique_matches, 1):
                             result += f"{i}. {match['name']} ({match['symbol']})\n"
-                            result += f"   국가: {match['country'] or '정보 없음'}\n"
+                            result += f"    Country: {match['country'] or 'Unknown'}\n"
                             if 'exchange' in match:
-                                result += f"   거래소: {match['exchange']}\n"
-                            result += f"   현재가: {match['price'] if match['price'] else '정보 없음'}\n\n"
+                                result += f"    Exchange: {match['exchange']}\n"
+                            result += f"    Current Price: {match['price'] if match['price'] else 'N/A'}\n\n"
                         
                         return {"result": result}
                         
@@ -565,6 +468,7 @@ async def search_stocks(query: str, limit: int = 5) -> dict[str, Any]:
                 "LG": "003550.KS",  # LG
                 "LG전자": "066570.KS",
                 "네이버": "035420.KS",
+                "NAVER": "035420.KS",
                 "카카오": "035720.KS",
                 "셀트리온": "068270.KS",
                 "기아": "000270.KS",
@@ -588,18 +492,22 @@ async def search_stocks(query: str, limit: int = 5) -> dict[str, Any]:
                 "신한은행": "055550.KS",
             }
             
-            for company, ticker in korean_stocks.items():
-                if query.lower() in company.lower():
-                    kr_info = await get_stock_info(ticker)
-                    if "error" not in kr_info:
-                        # 이미 추가된 심볼인지 확인
-                        if not any(m["symbol"] == kr_info.get("symbol", ticker) for m in matches):
-                            matches.append({
-                                "symbol": kr_info.get("symbol", ticker),
-                                "name": kr_info.get("name", company),
-                                "country": kr_info.get("country", "한국"),
-                                "price": kr_info.get("currentPrice", "정보 없음")
-                            })
+            # 한국어 검색어인 경우 한국 주식 매핑을 우선적으로 확인
+            if any(ord(char) > 127 for char in query):  # 한글이 포함된 경우
+                for company, ticker in korean_stocks.items():
+                    if query.lower() in company.lower() or company.lower() in query.lower():
+                        kr_info = await get_stock_info(ticker)
+                        if "error" not in kr_info:
+                            # 이미 추가된 심볼인지 확인
+                            if not any(m["symbol"] == kr_info.get("symbol", ticker) for m in matches):
+                                matches.append({
+                                    "symbol": kr_info.get("symbol", ticker),
+                                    "name": kr_info.get("name", company),
+                                    "country": "South Korea",
+                                    "price": kr_info.get("currentPrice", "N/A")
+                                })
+                                if len(matches) >= limit:
+                                    break
         
         # 3. 한국 주식 코드 직접 검색 (6자리 숫자)
         if query.isdigit():
@@ -611,8 +519,8 @@ async def search_stocks(query: str, limit: int = 5) -> dict[str, Any]:
                     matches.append({
                         "symbol": kr_info.get("symbol", kr_ticker),
                         "name": kr_info.get("name", ""),
-                        "country": kr_info.get("country", "한국"),
-                        "price": kr_info.get("currentPrice", "정보 없음")
+                        "country": "South Korea",
+                        "price": kr_info.get("currentPrice", "N/A")
                     })
             
             # 코스닥도 시도
@@ -624,8 +532,8 @@ async def search_stocks(query: str, limit: int = 5) -> dict[str, Any]:
                     matches.append({
                         "symbol": kq_info.get("symbol", kq_ticker),
                         "name": kq_info.get("name", ""),
-                        "country": kq_info.get("country", "한국"),
-                        "price": kq_info.get("currentPrice", "정보 없음")
+                        "country": "South Korea",
+                        "price": kq_info.get("currentPrice", "N/A")
                     })
         
         # 4. 미국 주요 기업 매핑 (yfinance 검색 결과에 없는 경우에만)
@@ -693,8 +601,8 @@ async def search_stocks(query: str, limit: int = 5) -> dict[str, Any]:
                         matches.append({
                             "symbol": us_info.get("symbol", ticker),
                             "name": us_info.get("name", company),
-                            "country": us_info.get("country", "미국"),
-                            "price": us_info.get("currentPrice", "정보 없음")
+                            "country": "United States",
+                            "price": us_info.get("currentPrice", "N/A")
                         })
         
         # 5. 심볼 직접 검색 (미국 주식) - yahooquery 검색 결과가 없는 경우에만
@@ -708,8 +616,8 @@ async def search_stocks(query: str, limit: int = 5) -> dict[str, Any]:
                         matches.append({
                             "symbol": us_info.get("symbol", us_ticker),
                             "name": us_info.get("name", ""),
-                            "country": us_info.get("country", "미국"),
-                            "price": us_info.get("currentPrice", "정보 없음")
+                            "country": "United States",
+                            "price": us_info.get("currentPrice", "N/A")
                         })
         
         # 중복 제거 및 제한
@@ -721,55 +629,47 @@ async def search_stocks(query: str, limit: int = 5) -> dict[str, Any]:
                 unique_matches.append(match)
                 if len(unique_matches) >= limit:
                     break
-        
+                
         if not unique_matches:
-            return {"error": f"'{query}'에 대한 검색 결과가 없습니다. 정확한 종목 이름이나 심볼을 입력해보세요."}
+            return {"error": f"No search results found for '{query}'. Please enter a valid stock name or symbol."}
         
-        result = f"'{query}'에 대한 검색 결과:\n\n"
+        result = f"Search results for '{query}':\n\n"
         for i, match in enumerate(unique_matches, 1):
             result += f"{i}. {match['name']} ({match['symbol']})\n"
-            result += f"   국가: {match['country'] or '정보 없음'}\n"
+            result += f"   Country: {match['country'] or 'Unknown'}\n"
             if 'exchange' in match:
-                result += f"   거래소: {match['exchange']}\n"
-            result += f"   현재가: {match['price'] if match['price'] else '정보 없음'}\n\n"
+                result += f"   Exchange: {match['exchange']}\n"
+            result += f"   Current Price: {match['price'] if match['price'] else 'N/A'}\n\n"
         
         return {"result": result}
     except Exception as e:
-        return {"error": f"주식 검색 중 오류가 발생했습니다: {str(e)}"}
+        return {"error": f"Error occurred while searching stocks: {str(e)}"}
 
 @mcp.tool()
-# async def compare_stocks(tickers: str, period: str = "1y") -> str:
 async def compare_stocks(tickers: str, period: str = "1y") -> dict[str, Any]:
     """
     여러 종목의 성과를 비교합니다.
+    Compare the performance of multiple stocks.
 
     Args:
-        tickers: 쉼표로 구분된 종목명 또는 티커 심볼 목록 (예: 'Apple,Microsoft,삼성전자' 또는 'AAPL,MSFT,005930.KS')
-        period: 비교 기간 (1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max 중 선택)
+        tickers (str): 쉼표로 구분된 종목명 또는 티커 심볼 목록
+        period (str): 비교 기간 (e.g. '1w', '1y', '6mo', ...)
+    Returns:
+        dict: 비교 결과 및 통계
     """
     try:
-        # 기간 확인
-        valid_periods = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"]
+        valid_periods = ["1d", "5d", "1w", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"]
         if period not in valid_periods:
-            # return f"잘못된 기간입니다. 다음 중에서 선택해주세요: {', '.join(valid_periods)}"
-            return {"error": f"잘못된 기간입니다. 다음 중에서 선택해주세요: {', '.join(valid_periods)}"}
-        
-        # 티커 목록 파싱
+            return {"error": f"Invalid period. Please choose from: {', '.join(valid_periods)}"}
         ticker_list = [t.strip() for t in tickers.split(",")]
         if len(ticker_list) < 2:
-            # return "비교하려면 최소 2개 이상의 종목이 필요합니다."
-            return {"error": "비교하려면 최소 2개 이상의 종목이 필요합니다."}
+            return {"error": "At least 2 stocks are required for comparison."}
         if len(ticker_list) > 5:
-            # return "비교는 최대 5개 종목까지만 가능합니다."
-            return {"error": "비교는 최대 5개 종목까지만 가능합니다."}
-        
+            return {"error": "Comparison is limited to 5 stocks maximum."}
         results = []
-        
         for ticker_or_name in ticker_list:
             try:
-                # 종목명을 티커로 변환
-                ticker_info = await resolve_ticker(ticker_or_name)
-                
+                ticker_info = await resolve_tickers(ticker_or_name)
                 if "error" in ticker_info:
                     results.append({
                         "ticker": ticker_or_name,
@@ -777,47 +677,35 @@ async def compare_stocks(tickers: str, period: str = "1y") -> dict[str, Any]:
                         "error": ticker_info["error"]
                     })
                     continue
-                
                 ticker = ticker_info["ticker"]
                 company_name = ticker_info["name"]
-                
-                # 주가 데이터 가져오기
                 stock = yf.Ticker(ticker)
                 history = stock.history(period=period)
-                
                 if history.empty:
                     results.append({
                         "ticker": ticker,
                         "name": company_name,
-                        "error": "데이터 없음"
+                        "error": "No data available"
                     })
                     continue
-                
-                # 기본 정보
                 info = await get_stock_info(ticker)
                 name = info.get("name", company_name)
-                
-                # 성과 계산
                 close_prices = history["Close"].dropna()
                 if len(close_prices) < 2:
                     results.append({
                         "ticker": ticker,
                         "name": name,
-                        "error": "충분한 데이터 없음"
+                        "error": "Not enough data"
                     })
                     continue
-                
                 first_price = close_prices.iloc[0]
                 last_price = close_prices.iloc[-1]
                 change = last_price - first_price
                 change_pct = (change / first_price) * 100
-                
-                # 통계 계산
                 avg_price = close_prices.mean()
                 min_price = close_prices.min()
                 max_price = close_prices.max()
                 volatility = close_prices.std()
-                
                 results.append({
                     "ticker": ticker,
                     "name": name,
@@ -830,42 +718,31 @@ async def compare_stocks(tickers: str, period: str = "1y") -> dict[str, Any]:
                     "max_price": round(max_price, 2),
                     "volatility": round(volatility, 2)
                 })
-                
             except Exception as e:
                 results.append({
-                    "ticker": ticker,
-                    "name": ticker,
+                    "ticker": ticker_or_name,
+                    "name": ticker_or_name,
                     "error": str(e)
                 })
-        
-        # 결과 포맷팅
-        result = f"종목 비교 결과 (기간: {period})\n\n"
-        
-        # 성과 순으로 정렬 (변동률 기준)
+        result = f"Stock Comparison Results (Period: {period})\n\n"
         valid_results = [r for r in results if "error" not in r]
         error_results = [r for r in results if "error" in r]
-        
         if valid_results:
             valid_results.sort(key=lambda x: x["change_pct"], reverse=True)
-            
-            result += "=== 성과 순위 ===\n"
+            result += "=== Performance Ranking ===\n"
             for i, r in enumerate(valid_results, 1):
                 result += f"{i}. {r['name']} ({r['ticker']})\n"
-                result += f"   변동률: {r['change_pct']:+.2f}% ({r['change']:+.2f})\n"
-                result += f"   시작가: {r['first_price']} → 종가: {r['last_price']}\n"
-                result += f"   평균가: {r['avg_price']}, 변동성: {r['volatility']:.2f}\n"
-                result += f"   최저가: {r['min_price']}, 최고가: {r['max_price']}\n\n"
-        
+                result += f"   Change: {r['change_pct']:+.2f}% ({r['change']:+.2f})\n"
+                result += f"   Start Price: {r['first_price']} → End Price: {r['last_price']}\n"
+                result += f"   Average Price: {r['avg_price']}, Volatility: {r['volatility']:.2f}\n"
+                result += f"   Low: {r['min_price']}, High: {r['max_price']}\n\n"
         if error_results:
-            result += "=== 오류 발생 종목 ===\n"
+            result += "=== Stocks with Errors ===\n"
             for r in error_results:
                 result += f"- {r['ticker']}: {r['error']}\n"
-        
-        # return result
         return {"result": result}
     except Exception as e:
-        # return f"종목 비교 중 오류가 발생했습니다: {str(e)}"
-        return {"error": f"종목 비교 중 오류가 발생했습니다: {str(e)}"}
+        return {"error": f"Error occurred while comparing stocks: {str(e)}"}
 
 async def search_korean_stocks_web(query: str, limit: int = 5) -> List[Dict[str, Any]]:
     """
@@ -908,14 +785,14 @@ async def search_korean_stocks_web(query: str, limit: int = 5) -> List[Dict[str,
                                             matches.append({
                                                 "symbol": ticker,
                                                 "name": stock_info.get("name", name),
-                                                "country": "한국",
+                                                "country": "South Korea",
                                                 "price": stock_info.get("currentPrice", price),
                                                 "source": "naver"
                                             })
                                             if len(matches) >= limit:
                                                 break
         except Exception as e:
-            print(f"네이버 금융 검색 중 오류: {str(e)}")
+            print(f"Error in Naver Finance search: {str(e)}")
         
         # 2. 한국투자증권 종목검색 (실제 API 사용 시)
         try:
@@ -924,7 +801,7 @@ async def search_korean_stocks_web(query: str, limit: int = 5) -> List[Dict[str,
             pass
             
         except Exception as e:
-            print(f"한국투자증권 API 검색 중 오류: {str(e)}")
+            print(f"Error in Korea Investment Securities API search: {str(e)}")
         
         # 3. 대안: 한국 주식 코드 데이터베이스 검색
         # 실제 구현에서는 한국 주식 목록을 데이터베이스나 파일에서 로드하여 검색
@@ -962,8 +839,8 @@ async def search_korean_stocks_web(query: str, limit: int = 5) -> List[Dict[str,
                         matches.append({
                             "symbol": ticker,
                             "name": stock_info.get("name", name),
-                            "country": "한국",
-                            "price": stock_info.get("currentPrice", "정보 없음"),
+                            "country": "South Korea",
+                            "price": stock_info.get("currentPrice", "N/A"),
                             "source": "database"
                         })
                         if len(matches) >= limit:
@@ -974,7 +851,7 @@ async def search_korean_stocks_web(query: str, limit: int = 5) -> List[Dict[str,
         return matches
         
     except Exception as e:
-        print(f"한국 주식 웹 검색 중 오류: {str(e)}")
+        print(f"Error in Korean stock web search: {str(e)}")
         return []
 
 async def search_stocks_alternative_api(query: str, limit: int = 5) -> List[Dict[str, Any]]:
@@ -992,7 +869,7 @@ async def search_stocks_alternative_api(query: str, limit: int = 5) -> List[Dict
         return []
         
     except Exception as e:
-        print(f"대체 API 검색 중 오류: {str(e)}")
+        print(f"Error in alternative API search: {str(e)}")
         return []
 
 async def run_tests():
@@ -1069,15 +946,15 @@ async def run_tests():
     # 공통 함수 테스트
     print("\n9. 공통 함수 테스트:")
     print("9-1. 'Apple' 티커 변환:")
-    result9_1 = await resolve_ticker("Apple")
+    result9_1 = await resolve_tickers("Apple")
     print(result9_1)
     
     print("\n9-2. '삼성전자' 티커 변환:")
-    result9_2 = await resolve_ticker("삼성전자")
+    result9_2 = await resolve_tickers("삼성전자")
     print(result9_2)
     
     print("\n9-3. 'AAPL' 티커 변환 (이미 티커인 경우):")
-    result9_3 = await resolve_ticker("AAPL")
+    result9_3 = await resolve_tickers("AAPL")
     print(result9_3)
     
     # 새로운 LLM 친화적 함수 테스트
@@ -1101,7 +978,7 @@ async def run_tests():
     print(result11_1)
     
     print("\n11-2. 'AMD' 티커 변환:")
-    result11_2 = await resolve_ticker("AMD")
+    result11_2 = await resolve_tickers("AMD")
     print(result11_2)
     
     print("\n11-3. 'NVIDIA,AMD' 비교:")
@@ -1116,107 +993,86 @@ async def run_tests():
 async def analyze_stock_comparison(stock_names: str, period: str = "1y") -> dict[str, Any]:
     """
     여러 종목을 분석하여 투자 리포트를 생성합니다.
-    
+    Analyze and compare multiple stocks to generate an investment report.
+
     Args:
-        stock_names: 쉼표로 구분된 종목명 목록 (예: '삼성전자,하이닉스,애플')
-        period: 분석 기간 (1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max 중 선택)
+        stock_names (str): 쉼표로 구분된 종목명 목록
+        period (str): 분석 기간 (e.g. '1w', '1y', '6mo', ...)
+    Returns:
+        dict: 비교 분석 결과
     """
     try:
-        # 종목명 리스트로 변환
         stock_list = [name.strip() for name in stock_names.split(",")]
-        
         if len(stock_list) < 2:
-            return {"error": "비교하려면 최소 2개 이상의 종목이 필요합니다."}
+            return {"error": "At least 2 stocks are required for comparison."}
         if len(stock_list) > 5:
-            return {"error": "비교는 최대 5개 종목까지만 가능합니다."}
-        
-        # 모든 종목을 티커로 변환
-        ticker_results = await resolve_multiple_tickers(stock_list)
-        
-        if not ticker_results["tickers"]:
-            return {"error": "모든 종목에 대해 티커를 찾을 수 없습니다."}
-        
-        # 티커 목록 생성
+            return {"error": "Comparison is limited to 5 stocks maximum."}
+        ticker_results = await resolve_tickers(stock_list)
+        if "error" in ticker_results:
+            return {"error": ticker_results["error"]}
         ticker_string = ",".join([item["ticker"] for item in ticker_results["tickers"]])
-        
-        # 종목 비교 실행
         comparison_result = await compare_stocks(ticker_string, period)
-        
-        # 에러가 있는 종목들 추가 정보
         if ticker_results["errors"]:
             comparison_result["warnings"] = ticker_results["errors"]
-        
         return comparison_result
-        
     except Exception as e:
-        return {"error": f"종목 분석 중 오류가 발생했습니다: {str(e)}"}
+        return {"error": f"Error occurred while analyzing stocks: {str(e)}"}
 
 @mcp.tool()
 async def get_stock_analysis(stock_name: str) -> dict[str, Any]:
     """
     특정 종목에 대한 종합 분석을 제공합니다.
-    
+    Provide a comprehensive analysis for a given stock.
+
     Args:
-        stock_name: 종목명 또는 티커 심볼 (예: '삼성전자', 'Apple', '005930.KS')
+        stock_name (str): 종목명 또는 티커 심볼
+    Returns:
+        dict: 종합 분석 결과
     """
     try:
-        # 종목명을 티커로 변환
-        ticker_info = await resolve_ticker(stock_name)
-        
+        ticker_info = await resolve_tickers(stock_name)
         if "error" in ticker_info:
             return {"error": ticker_info["error"]}
-        
         ticker = ticker_info["ticker"]
         company_name = ticker_info["name"]
-        
-        # 1. 기본 주가 정보
         price_info = await get_stock_price(stock_name)
-        
-        # 2. 최근 3개월 히스토리
         history_info = await get_stock_history(stock_name, period="3mo")
-        
-        # 3. 어닝 정보
         earnings_info = await get_earnings(stock_name)
-        
-        # 종합 분석 결과 생성
         analysis_result = f"""
-=== {company_name} ({ticker}) 종합 분석 ===
+=== {company_name} ({ticker}) Comprehensive Analysis ===
 
-1. 기본 주가 정보:
-{price_info.get('result', '정보 없음')}
+1. Basic Stock Information:
+{price_info.get('result', 'N/A')}
 
-2. 최근 3개월 주가 동향:
-{history_info.get('result', '정보 없음')}
+2. Recent 3-Month Price Trend:
+{history_info.get('result', 'N/A')}
 
-3. 실적 정보:
-{earnings_info.get('result', '정보 없음')}
+3. Earnings Information:
+{earnings_info.get('result', 'N/A')}
 
-=== 분석 완료 ===
+=== Analysis Complete ===
 """
-        
         return {"result": analysis_result}
-        
     except Exception as e:
-        return {"error": f"종목 분석 중 오류가 발생했습니다: {str(e)}"}
+        return {"error": f"Error occurred while analyzing stock: {str(e)}"}
 
 @mcp.tool()
 async def get_multiple_stock_prices(stock_names: str) -> dict[str, Any]:
     """
     여러 종목의 현재 주가를 한번에 조회합니다.
-    
+    Get the current prices of multiple stocks at once.
+
     Args:
-        stock_names: 쉼표로 구분된 종목명 목록 (예: '삼성전자,하이닉스,애플,마이크로소프트')
+        stock_names (str): 쉼표로 구분된 종목명 목록
+    Returns:
+        dict: 다중 종목 주가 정보
     """
     try:
-        # 종목명 리스트로 변환
         stock_list = [name.strip() for name in stock_names.split(",")]
-        
         if len(stock_list) > 10:
-            return {"error": "한번에 최대 10개 종목까지만 조회 가능합니다."}
-        
+            return {"error": "Maximum 10 stocks can be queried at once."}
         results = []
         errors = []
-        
         for stock_name in stock_list:
             try:
                 price_info = await get_stock_price(stock_name)
@@ -1226,23 +1082,17 @@ async def get_multiple_stock_prices(stock_names: str) -> dict[str, Any]:
                     results.append(f"{stock_name}: {price_info['result']}")
             except Exception as e:
                 errors.append(f"{stock_name}: {str(e)}")
-        
-        # 결과 포맷팅
-        result_text = f"=== 다중 종목 주가 정보 ===\n\n"
-        
+        result_text = f"=== Multiple Stock Price Information ===\n\n"
         if results:
             for i, result in enumerate(results, 1):
                 result_text += f"{i}. {result}\n\n"
-        
         if errors:
-            result_text += "=== 오류 발생 종목 ===\n"
+            result_text += "=== Stocks with Errors ===\n"
             for error in errors:
                 result_text += f"- {error}\n"
-        
         return {"result": result_text}
-        
     except Exception as e:
-        return {"error": f"다중 종목 조회 중 오류가 발생했습니다: {str(e)}"}
+        return {"error": f"Error occurred while fetching multiple stock prices: {str(e)}"}
 
 if __name__ == "__main__":
     # 모드 선택
@@ -1266,7 +1116,7 @@ if __name__ == "__main__":
             print(result2)
             
             print("\n3. AMD resolve_ticker 테스트:")
-            result3 = await resolve_ticker("AMD")
+            result3 = await resolve_tickers("AMD")
             print(result3)
             
             print("\n4. NVIDIA,AMD 비교 테스트:")
@@ -1278,7 +1128,7 @@ if __name__ == "__main__":
             print(result5)
             
             print("\n6. NVIDIA resolve_ticker 테스트:")
-            result6 = await resolve_ticker("NVIDIA")
+            result6 = await resolve_tickers("NVIDIA")
             print(result6)
             
             print("\n7. NVDA,AMD 비교 테스트 (정확한 티커 사용):")
